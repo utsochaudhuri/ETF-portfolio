@@ -1,9 +1,11 @@
 from fredapi import Fred
-from datetime import datetime
+from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import yfinance as yf
 import pandas as pd
 from sklearn.linear_model import LinearRegression
+import matplotlib.pyplot as plt
+import numpy as np
 
 start_date = datetime.strptime("2002-01-01", "%Y-%m-%d")
 end_date = datetime.strptime("2025-07-01", "%Y-%m-%d")
@@ -119,8 +121,9 @@ def ETF_return(count, start_date, ticker):
     return ticker_month_return
 
 def port_invest(count, start_date, alpha_pos, alpha_neg, port_value):
-    start_month = start_date+relativedelta(months=36)+relativedelta(months=count)
-    end_month = start_date+relativedelta(months=36)+relativedelta(months=count+1)
+    investment_count = count - 36
+    start_month = start_date + relativedelta(months=36) + relativedelta(months=investment_count)
+    end_month = start_date + relativedelta(months=36) + relativedelta(months=investment_count + 1)
     ETF_ratios = []
     for ticker in alpha_pos:
         ticker_start_price = data[ticker].loc[closest_date(start_month), "Adj Close"]
@@ -136,7 +139,10 @@ def port_invest(count, start_date, alpha_pos, alpha_neg, port_value):
     return port_value
 
 port_value = 100000
-for i in range(270):
+SP_value = 100000
+port_values_ot = []
+SP_value_ot = []
+for i in range(246):
     if i<36:
         reg_data.loc[i, "x1=Rm-Rf"] = market_prem_calc(i, start_date)
         reg_data.loc[i, "x2=SMB"] = SMB_calc(i, start_date)
@@ -144,7 +150,7 @@ for i in range(270):
         for ticker in ETF_tickers:
             reg_data.loc[i, f"{ticker}: y=Ri-Rf"] = ETF_return(i, start_date, ticker)
     # Last row accounting
-    elif i == 269:
+    elif i == 245:
         # Regressing data and calculating alpha
         for ticker in ETF_tickers:
             X = reg_data[["x1=Rm-Rf", "x2=SMB", "x3=HML"]]
@@ -155,7 +161,10 @@ for i in range(270):
         # Investing portfolio
         positive_alpha_ETFs = [k for k, v in ETF_dict.items() if v > 0]
         negative_alpha_ETFs = [k for k, v in ETF_dict.items() if v < 0]
-        port_value = port_invest(i, start_date, positive_alpha_ETFs, negative_alpha_ETFs, port_value)
+        port_value = port_invest(i, start_date, [], negative_alpha_ETFs, port_value)
+        port_values_ot.append(port_value)
+        SP_value = port_invest(i, start_date, ["^GSPC"], [], SP_value)
+        SP_value_ot.append(SP_value)
     else:
         # Regressing data and calculating alpha
         for ticker in ETF_tickers:
@@ -168,8 +177,11 @@ for i in range(270):
         positive_alpha_ETFs = [k for k, v in ETF_dict.items() if v > 0]
         negative_alpha_ETFs = [k for k, v in ETF_dict.items() if v < 0]
         port_value = port_invest(i, start_date, positive_alpha_ETFs, negative_alpha_ETFs, port_value)
+        port_values_ot.append(port_value)
+        SP_value = port_invest(i, start_date, ["^GSPC"], [], SP_value)
+        SP_value_ot.append(SP_value)
 
-        # Row change
+        # Row change for rolling linear regression
         reg_data = reg_data.iloc[1:].reset_index(drop=True)
         new_row = {}
         new_row["x1=Rm-Rf"] = market_prem_calc(i, start_date)
@@ -179,6 +191,51 @@ for i in range(270):
             new_row[f"{ticker}: y=Ri-Rf"] = ETF_return(i, start_date, ticker)
         reg_data.loc[len(reg_data)] = new_row
 
+port_values_ot = port_values_ot[:-1]
 
-print(port_value)
+# Create time indices for both arrays
+# Since they have different lengths, we'll use the minimum length for comparison
+min_length = min(len(SP_value_ot), len(port_values_ot))
 
+# Create time axis - you can adjust this based on your actual time period
+# Here I'm using sequential time points (could be days, weeks, months, etc.)
+time_points = list(range(min_length))
+
+# For demonstration, let's create actual dates
+start_date = datetime(2002, 1, 1)
+dates = [start_date + timedelta(days=i) for i in range(min_length)]
+
+# Create the plot
+plt.figure(figsize=(14, 8))
+
+# Plot both lines (using only the overlapping length)
+plt.plot(dates, SP_value_ot[:min_length], label='S&P500', linewidth=2, marker='o', markersize=3, alpha=0.8)
+plt.plot(dates, port_values_ot[:min_length], label='Portfolio', linewidth=2, marker='s', markersize=3, alpha=0.8)
+
+# Customize the plot
+plt.title('Active vs Passive investing', fontsize=16, fontweight='bold')
+plt.xlabel('Time', fontsize=12)
+plt.ylabel('Value', fontsize=12)
+
+# Format the x-axis to show dates nicely
+plt.xticks(rotation=45)
+plt.gca().xaxis.set_major_locator(plt.MaxNLocator(15))  # Limit number of x-axis labels
+
+# Add grid for better readability
+plt.grid(True, alpha=0.3)
+
+# Add legend
+plt.legend(loc='upper left', fontsize=12)
+
+# Format y-axis to show values in thousands
+plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x/1000:.0f}K'))
+
+# Adjust layout to prevent label cutoff
+plt.tight_layout()
+
+# Add some statistics
+print(f"\nDataset 1 - Min: {min(SP_value_ot):,.0f}, Max: {max(SP_value_ot):,.0f}")
+print(f"Dataset 2 - Min: {min(port_values_ot):,.0f}, Max: {max(port_values_ot):,.0f}")
+
+# Display the plot
+plt.show()

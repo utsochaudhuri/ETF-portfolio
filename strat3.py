@@ -65,7 +65,7 @@ reg_data = {
 reg_data = pd.DataFrame(reg_data)
 
 def closest_date(date):
-    target_date = pd.to_datetime(date)
+    target_date = pd.to_datetime(date)  
     available_dates = data["IWM"].index
     closest_date = min(available_dates, key=lambda d: abs(d - target_date))
     return closest_date

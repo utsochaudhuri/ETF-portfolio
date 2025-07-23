@@ -1,3 +1,4 @@
+#working
 from fredapi import Fred
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -5,7 +6,11 @@ import yfinance as yf
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 
-start_date = datetime.strptime("2002-01-01", "%Y-%m-%d")
+file_name = "roe_asset_data.csv"
+ff5_data = pd.read_csv(file_name)
+ff5_data['Date'] = pd.to_datetime(ff5_data['Date'])
+
+start_date = datetime.strptime("2020-07-01", "%Y-%m-%d")
 end_date = datetime.strptime("2025-07-01", "%Y-%m-%d")
 
 fred = Fred(api_key="df4e88e416cc272952e53b8c6f4b2055")
@@ -50,6 +55,8 @@ reg_data = {
     "x1=Rm-Rf": [None]*36,
     "x2=SMB": [None]*36,
     "x3=HML": [None]*36,
+    "x4=RMW": [None]*36,
+    "x5=CMA": [None]*36,
     "IYW: y=Ri-Rf": [None]*36,
     "IYF: y=Ri-Rf": [None]*36,
     "IYJ: y=Ri-Rf": [None]*36,
@@ -109,6 +116,39 @@ def HML_calc(count, start_date):
     HML = IVE_month_return - IVW_month_return
     return HML
 
+def closest_date_ff5_row(date, ric):
+    target_date = pd.to_datetime(date)
+    ric_ff5_data = ff5_data.query(f"Symbol == '{ric}'")
+    available_dates = ric_ff5_data["Date"]
+    closest_date = min(available_dates, key=lambda d: abs(d - target_date))
+    return ric_ff5_data.query(f"Date == @pd.Timestamp('{closest_date}')")
+
+def month_ff5_perf_df_construct(count, start_date):
+    month_ff5_perf_df = pd.DataFrame(columns=["Symbol", "Date", "ROE_Percent", "Asset_Growth_Rate_Percent"])
+    comps = ff5_data["Symbol"].unique().tolist()
+    start_month = start_date+relativedelta(months=count)
+    for ric in comps:
+        new_ric_row = closest_date_ff5_row(start_month, ric)
+        if not new_ric_row.empty:
+            month_ff5_perf_df = pd.concat([month_ff5_perf_df, new_ric_row], ignore_index=True)
+    return month_ff5_perf_df
+
+def RMW_calc(count):
+    month_ff5_df = month_ff5_perf_df_construct(count, start_date)
+    month_ff5_df = month_ff5_df.sort_values(by="ROE_Percent", ascending=False)
+    robust_val = month_ff5_df.nlargest(90, columns=["ROE_Percent"])["ROE_Percent"].mean()
+    weak_val = month_ff5_df.nsmallest(90, columns=["ROE_Percent"])["ROE_Percent"].mean()
+    RMW_val = robust_val - weak_val
+    return RMW_val
+
+def CMA_calc(count):
+    month_ff5_df = month_ff5_perf_df_construct(count, start_date)
+    month_ff5_df = month_ff5_df.sort_values(by="Asset_Growth_Rate_Percent", ascending=False)
+    consv_val = month_ff5_df.nsmallest(90, columns=["Asset_Growth_Rate_Percent"])["Asset_Growth_Rate_Percent"].mean()
+    agg_val = month_ff5_df.nlargest(90, columns=["Asset_Growth_Rate_Percent"])["Asset_Growth_Rate_Percent"].mean()
+    CMA_val = consv_val - agg_val
+    return CMA_val
+
 def ETF_return(count, start_date, ticker):
     start_month = start_date+relativedelta(months=count)
     end_month = start_date+relativedelta(months=count+1)
@@ -118,10 +158,10 @@ def ETF_return(count, start_date, ticker):
     return ticker_month_return
 
 def port_invest(count, start_date, alpha_pos, alpha_neg, port_value):
-    start_month = start_date+relativedelta(months=36)+relativedelta(months=count)
-    end_month = start_date+relativedelta(months=36)+relativedelta(months=count+1)
+    investment_count = count - 36
+    start_month = start_date + relativedelta(months=36) + relativedelta(months=investment_count)
+    end_month = start_date + relativedelta(months=36) + relativedelta(months=investment_count + 1)
     ETF_ratios = []
-    print("Alpah pos:", alpha_pos)
     for ticker in alpha_pos:
         ticker_start_price = data[ticker].loc[closest_date(start_month), "Adj Close"]
         ticker_end_price = data[ticker].loc[closest_date(end_month), "Adj Close"]
@@ -136,18 +176,21 @@ def port_invest(count, start_date, alpha_pos, alpha_neg, port_value):
     return port_value
 
 port_value = 100000
-for i in range(270):
+for i in range(60):
     if i<36:
         reg_data.loc[i, "x1=Rm-Rf"] = market_prem_calc(i, start_date)
         reg_data.loc[i, "x2=SMB"] = SMB_calc(i, start_date)
         reg_data.loc[i, "x3=HML"] = HML_calc(i, start_date)
+        reg_data.loc[i, "x4=RMW"] = RMW_calc(i)
+        reg_data.loc[i, "x5=CMA"] = CMA_calc(i)
+
         for ticker in ETF_tickers:
             reg_data.loc[i, f"{ticker}: y=Ri-Rf"] = ETF_return(i, start_date, ticker)
     # Last row accounting
-    elif i == 269:
+    elif i == 59:
         # Regressing data and calculating alpha
         for ticker in ETF_tickers:
-            X = reg_data[["x1=Rm-Rf", "x2=SMB", "x3=HML"]]
+            X = reg_data[["x1=Rm-Rf", "x2=SMB", "x3=HML", "x4=RMW", "x5=CMA"]]
             y = reg_data[f"{ticker}: y=Ri-Rf"]
             model = LinearRegression().fit(X, y)
             ETF_dict[ticker] = model.intercept_
@@ -156,10 +199,11 @@ for i in range(270):
         positive_alpha_ETFs = [k for k, v in ETF_dict.items() if v > 0]
         negative_alpha_ETFs = [k for k, v in ETF_dict.items() if v < 0]
         port_value = port_invest(i, start_date, positive_alpha_ETFs, negative_alpha_ETFs, port_value)
+        print(port_value)
     else:
         # Regressing data and calculating alpha
         for ticker in ETF_tickers:
-            X = reg_data[["x1=Rm-Rf", "x2=SMB", "x3=HML"]]
+            X = reg_data[["x1=Rm-Rf", "x2=SMB", "x3=HML", "x4=RMW", "x5=CMA"]]
             y = reg_data[f"{ticker}: y=Ri-Rf"]
             model = LinearRegression().fit(X, y)
             ETF_dict[ticker] = model.intercept_
@@ -167,8 +211,6 @@ for i in range(270):
         # Investing portfolio
         positive_alpha_ETFs = [k for k, v in ETF_dict.items() if v > 0]
         negative_alpha_ETFs = [k for k, v in ETF_dict.items() if v < 0]
-        print("pos etf",positive_alpha_ETFs)
-        print("neg etf",negative_alpha_ETFs)
         port_value = port_invest(i, start_date, positive_alpha_ETFs, negative_alpha_ETFs, port_value)
 
         # Row change
@@ -177,8 +219,11 @@ for i in range(270):
         new_row["x1=Rm-Rf"] = market_prem_calc(i, start_date)
         new_row["x2=SMB"] = SMB_calc(i, start_date)
         new_row["x3=HML"] = HML_calc(i, start_date)
+        new_row["x4=RMW"] = RMW_calc(i)
+        new_row["x5=CMA"] = CMA_calc(i)
         for ticker in ETF_tickers:
             new_row[f"{ticker}: y=Ri-Rf"] = ETF_return(i, start_date, ticker)
         reg_data.loc[len(reg_data)] = new_row
+        print(port_value)
 
 print(port_value)
